@@ -66,7 +66,7 @@ A pure-QML module needs **no C++ changes** — the shell discovers it from its m
 
 ### Testing your change
 
-Sorry I've not made time yet to work on automated tests so for now testing is manual:
+Automated coverage is limited to a small Qt Test suite for the Stash backend (see [BUILDING.md](BUILDING.md#unit-tests)); everything else is manual:
 
 - **Build and run** on at least one target (macOS ARM or Raspberry Pi). See [BUILDING.md](BUILDING.md#run).
 - **Navigate with a remote/keyboard only** and confirm every screen in your change is reachable and exitable.

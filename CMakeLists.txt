@@ -53,6 +53,7 @@ add_executable(240mp
     src/modules/plex/PlexBackend.cpp
     src/modules/jellyfin/JellyfinBackend.cpp
     src/modules/emby/EmbyBackend.cpp
+    src/modules/stash/StashBackend.cpp
     src/modules/ambient_mode/AmbientModeBackend.cpp
     src/modules/youtube/YouTubeBackend.cpp
     src/modules/nfc_reader/NfcReaderBackend.cpp
@@ -108,6 +109,25 @@ endif()
 target_include_directories(240mp PRIVATE
     src
 )
+
+# ── Unit tests (opt-in) ───────────────────────────────────────────────────────
+# The app is validated by hand on real hardware (see CONTRIBUTING.md). These
+# tests cover the pure parsing/formatting helpers in the Stash backend and are
+# meant for a dev machine:
+#   cmake -B build -DMP240_BUILD_TESTS=ON . && cmake --build build
+#   ctest --test-dir build --output-on-failure
+option(MP240_BUILD_TESTS "Build the unit tests (requires Qt6 Test)" OFF)
+if(MP240_BUILD_TESTS)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    enable_testing()
+    add_executable(240mp-tests
+        tests/stash_backend_test.cpp
+        src/modules/stash/StashBackend.cpp
+    )
+    target_include_directories(240mp-tests PRIVATE src)
+    target_link_libraries(240mp-tests PRIVATE Qt6::Core Qt6::Network Qt6::Test)
+    add_test(NAME stash_backend COMMAND 240mp-tests)
+endif()
 
 # ── macOS bundle metadata ──────────────────────────────────────────────────────
 set_target_properties(240mp PROPERTIES

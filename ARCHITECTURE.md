@@ -49,7 +49,7 @@ The guiding idea: **browse structured content, then hand off to the right tool f
   CMakeLists.txt
 ```
 
-There are three modules today: `local_files`, `plex`, and `ambient_mode`. `plex` is a helpful reference when building something new as it covers a more complex use case (connecting to a 3rd party API with auth)
+Modules today cover local folders, Plex, Jellyfin, Emby, Stash, YouTube, NFC cards, scripts, weather and Ambient Mode. `plex` is a helpful reference when building something new as it covers a more complex use case (connecting to a 3rd party API with auth); `stash` (`src/modules/stash/`) is a compact reference for a GraphQL-based integration, including a backend whose connection details live in its own file rather than `config.json`.
 
 ## Anatomy of a Module
 
@@ -602,3 +602,5 @@ User configuration is stored in `config.json` in the app's data directory:
 ```
 
 Each module's settings live under `modules.<id>`. Use `save_setting` / `get_setting` (which support dot-notation keys) rather than writing the file directly. The data directory is created on first run and is separate from the app itself, so rebuilding never wipes user settings. For the exact per-OS path (macOS vs Raspberry Pi OS), see [BUILDING.md](BUILDING.md#configuration).
+
+Credentials and other per-module connection details live in their own file next to `config.json` rather than in it — e.g. `jellyfin_auth.json`, `plex_auth.json`, and Stash's `stash.json` (read-only; the user writes it by hand, see [modules/stash/README.md](modules/stash/README.md)).

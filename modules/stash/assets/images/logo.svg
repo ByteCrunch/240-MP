@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" viewBox="0 0 28 20">
+  <!-- An original mark for the Stash module: stacked media cases on a shelf,
+       with a play triangle cut out of the top one. Single-colour so the app's
+       colour schemes can re-tint it. -->
+  <g fill="#ffffff">
+    <path fill-rule="evenodd" d="M8.5 0.5h18a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-18a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1Zm6.5 1.6v2.8l2.6-1.4-2.6-1.4Z"/>
+    <rect x="4" y="7" width="20" height="5" rx="1"/>
+    <rect x="0.5" y="13.5" width="20" height="5" rx="1"/>
+  </g>
+</svg>

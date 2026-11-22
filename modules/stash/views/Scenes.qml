@@ -1,0 +1,205 @@
+import QtQuick
+import Components
+
+// Scenes for a saved filter or a tag. Rows show the scene title plus its tags;
+// selecting a row hands the scene's stream URL to the Player (mpv).
+FocusScope {
+    id: scenesRoot
+
+    property var navParams: ({})
+    property var navListState: navParams.navListState || ({})
+
+    signal navigateTo(string path, var params, var listState)
+    signal goBack()
+
+    property string listTitle: navParams.title || ""
+    property string tagId: navParams.tagId || ""
+    property var findFilter: navParams.findFilter || ({})
+    property var objectFilter: navParams.objectFilter || ({})
+
+    property var scenes: []
+    property bool isLoading: true
+    property string errorMessage: ""
+
+    Connections {
+        target: stashBackend
+
+        function onScenesLoaded(loaded) {
+            scenesRoot.isLoading = false
+            scenesRoot.errorMessage = ""
+            scenesRoot.scenes = loaded
+            if (loaded.length > 0) {
+                var restore = (scenesRoot.navListState.currentIndex !== undefined)
+                        ? scenesRoot.navListState.currentIndex : 0
+                sceneList.currentIndex = Math.min(restore, loaded.length - 1)
+                sceneList.positionViewAtIndex(sceneList.currentIndex, ListView.Contain)
+            }
+        }
+
+        function onErrorOccurred(msg) {
+            scenesRoot.isLoading = false
+            scenesRoot.errorMessage = msg
+            console.log("[Stash Scenes] Error: " + msg)
+        }
+    }
+
+    Component.onCompleted: {
+        if (!stashBackend.has_config()) {
+            isLoading = false
+            errorMessage = stashBackend.get_config_error()
+            return
+        }
+        if (tagId !== "")
+            stashBackend.load_scenes_for_tag(tagId)
+        else
+            stashBackend.load_scenes(findFilter, objectFilter)
+    }
+
+    focus: true
+    Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
+            goBack()
+            event.accepted = true
+        }
+    }
+
+    function selectScene() {
+        var scene = scenes[sceneList.currentIndex]
+        if (!scene) return
+        scenesRoot.navigateTo("Player.qml", { item: scene }, { currentIndex: sceneList.currentIndex })
+    }
+
+    // ---
+    // UI
+    // ---
+
+    AppBar {
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.topMargin: root.sh * 0.125 //60
+        anchors.leftMargin: root.sw * 0.125 //80
+        iconSource: moduleRoot.moduleIcon
+        title: moduleRoot.moduleName
+        subtitle: scenesRoot.listTitle
+    }
+
+    // Loading / error / empty states
+    Text {
+        visible: scenesRoot.isLoading
+        text: "LOADING..."
+        color: root.tertiaryColor
+        font.family: root.globalFont
+        anchors.centerIn: parent
+        font.pixelSize: root.sh * 0.05 //24
+    }
+    Text {
+        visible: !scenesRoot.isLoading && scenesRoot.errorMessage !== ""
+        text: scenesRoot.errorMessage
+        color: root.tertiaryColor
+        font.family: root.globalFont
+        anchors.centerIn: parent
+        width: root.sw * 0.76875 //492
+        wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter
+        font.pixelSize: root.sh * 0.05 //24
+    }
+    Text {
+        visible: !scenesRoot.isLoading && scenesRoot.errorMessage === "" && scenesRoot.scenes.length === 0
+        text: "NO SCENES FOUND"
+        color: root.tertiaryColor
+        font.family: root.globalFont
+        anchors.centerIn: parent
+        font.pixelSize: root.sh * 0.05 //24
+    }
+
+    // Body — title plus tags, marquee-scrolled when the row is longer than the list
+    ListView {
+        id: sceneList
+        model: scenesRoot.scenes
+        anchors.top: parent.top
+        anchors.left: parent.left
+        anchors.topMargin: root.sh * 0.25 //120
+        anchors.leftMargin: root.sw * 0.115625 //74
+        width: root.sw * 0.76875 //492
+        height: root.sh * 0.525 //252
+        clip: true
+        focus: true
+
+        Keys.onUpPressed: {
+            if (count === 0) return
+            if (currentIndex > 0) currentIndex--
+            else currentIndex = count - 1
+            sceneList.positionViewAtIndex(sceneList.currentIndex, ListView.Contain)
+        }
+        Keys.onDownPressed: {
+            if (count === 0) return
+            if (currentIndex < count - 1) currentIndex++
+            else currentIndex = 0
+            sceneList.positionViewAtIndex(sceneList.currentIndex, ListView.Contain)
+        }
+        Keys.onReturnPressed: scenesRoot.selectScene()
+
+        delegate: Item {
+            width: sceneList.width
+            height: root.sh * 0.0583333 //28
+
+            Item {
+                id: textClip
+                width: Math.min(rowText.implicitWidth, sceneList.width)
+                height: parent.height
+                clip: true
+
+                Rectangle {
+                    color: root.accentColor
+                    anchors.fill: rowText
+                    visible: sceneList.currentIndex === index
+                }
+
+                Text {
+                    id: rowText
+                    text: modelData.tagsText
+                          ? (modelData.title || "") + " - " + modelData.tagsText
+                          : (modelData.title || "")
+                    color: sceneList.currentIndex === index ? root.surfaceColor : root.primaryColor
+                    font.family: root.globalFont
+                    font.capitalization: Font.AllUppercase
+                    anchors.verticalCenter: parent.verticalCenter
+                    x: 0
+                    topPadding: root.sh * 0.0041667 //2
+                    leftPadding: root.sw * 0.009375 //6
+                    rightPadding: root.sw * 0.009375 //6
+                    bottomPadding: root.sh * 0.00625 //3
+                    font.pixelSize: root.sh * 0.05 //24
+                }
+
+                SequentialAnimation {
+                    running: (sceneList.currentIndex === index) &&
+                             (rowText.implicitWidth > textClip.width)
+                    loops: Animation.Infinite
+                    onRunningChanged: if (!running) rowText.x = 0
+                    PauseAnimation { duration: 1500 }
+                    NumberAnimation {
+                        target: rowText; property: "x"
+                        to: textClip.width - rowText.implicitWidth
+                        duration: Math.abs(to) * 20
+                    }
+                    PauseAnimation { duration: 2000 }
+                    PropertyAction { target: rowText; property: "x"; value: 0 }
+                }
+            }
+        }
+    }
+
+    // Footer
+    Text {
+        id: footer
+        text: root.hints.back + ":BACK " + root.hints.navigate + ":NAVIGATE " + root.hints.select + ":PLAY"
+        color: root.tertiaryColor
+        font.family: root.globalFont
+        anchors.bottom: parent.bottom
+        anchors.left: parent.left
+        anchors.bottomMargin: root.sh * 0.1041667 //50
+        anchors.leftMargin: root.sw * 0.125 //80
+        font.pixelSize: root.sh * 0.0333333 //16
+    }
+}

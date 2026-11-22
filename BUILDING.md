@@ -84,6 +84,7 @@ On macOS all user configuration is stored at:
 ~/Library/Application Support/240-MP/
   config.json       ← app and module settings
   plex_auth.json    ← plex auth
+  stash.json        ← Stash server URL + API key (see modules/stash/README.md)
   input.cfg         ← optional gamepad mapping overrides (see Gamepad input below)
 ```
 
@@ -190,6 +191,7 @@ On Raspberry Pi OS all user configuration is stored at:
 ~/.local/share/240-MP/
   config.json      ← app and module settings
   plex_auth.json   ← plex auth
+  stash.json       ← Stash server URL + API key (see modules/stash/README.md)
   input.cfg        ← optional gamepad mapping overrides (see Gamepad input below)
 ```
 
@@ -408,6 +410,17 @@ QT_QPA_EGLFS_DEBUG=1               # EGLFS/DRM detail on Raspberry Pi headless
 ```
 
 Set them inline, e.g. `QML_IMPORT_TRACE=1 APP_ROOT=$(pwd) ./build/240mp`.
+
+## Unit tests
+
+The app is validated by hand on real hardware (see [CONTRIBUTING.md](CONTRIBUTING.md#testing-your-change)). A small Qt Test suite covers the Stash module's parsing/formatting helpers, which is useful when changing that module's config handling or scene mapping:
+
+```bash
+cmake -B build -DMP240_BUILD_TESTS=ON . && cmake --build build
+ctest --test-dir build --output-on-failure
+```
+
+The test target is off by default, so a normal build never requires Qt's Test component.
 
 ## GitHub Actions
 
