@@ -1,28 +1,59 @@
 import QtQuick
 
-// Hands the scene's Stash stream URL to mpv. The Player is deliberately thin:
-// mpv covers the screen, and the one playbackEnded handler always returns to
-// the list (no autoplay, no progress reporting — this module is read-only).
+// Hands the scene's Stash stream URL to mpv. mpv covers the screen and owns
+// playback; this view only forwards remote/keyboard input to mpv's OSC (the
+// same relay the other modules' Player views do) and returns to the list once
+// mpv exits. No autoplay and no progress reporting — this module is read-only.
 FocusScope {
     id: playerRoot
 
     property var navParams: ({})
     property var item: navParams.item || ({})
     property string streamUrl: item.streamUrl || ""
-    property string streamTitle: item.title || ""
     property string errorMessage: ""
 
     signal goBack()
 
     focus: true
     Keys.onPressed: function(event) {
-        if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
-            goBack()
+        if (playerRoot.errorMessage !== "") {
+            // Preflight failed: mpv never started, so the keys are ours again.
+            if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
+                goBack()
+                event.accepted = true
+            } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                playerRoot.checkStream()   // retry
+                event.accepted = true
+            }
+            return
+        }
+
+        // Playing: relay to mpv, exactly like the other modules' Player views.
+        // On RPi/EGLFS the Qt window keeps OS focus during playback, so this is
+        // the path that drives the OSC; on macOS InputManager does it instead.
+        if (event.key === Qt.Key_Escape) {
+            mpvController.sendKey("ESC")
             event.accepted = true
-        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
-                   && playerRoot.errorMessage !== "") {
-            // Retry after a failed preflight.
-            playerRoot.checkStream()
+        } else if (event.key === Qt.Key_Backspace) {
+            mpvController.sendKey("BS")
+            event.accepted = true
+        } else if (event.key === Qt.Key_Up) {
+            mpvController.sendKey("UP")
+            event.accepted = true
+        } else if (event.key === Qt.Key_Down) {
+            mpvController.sendKey("DOWN")
+            event.accepted = true
+        } else if (event.key === Qt.Key_Left) {
+            mpvController.sendKey("LEFT")
+            event.accepted = true
+        } else if (event.key === Qt.Key_Right) {
+            mpvController.sendKey("RIGHT")
+            event.accepted = true
+        } else if (event.key === Qt.Key_Space) {
+            mpvController.sendKey("SPACE")
+            event.accepted = true
+        } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+            mpvController.sendKey("ENTER")
             event.accepted = true
         }
     }
@@ -31,8 +62,8 @@ FocusScope {
     // render thread can present this view. Defer one tick so the loading frame
     // is actually on screen before the display is handed over.
     //
-    // subTrack -2 = --sid=no: this module has no subtitle UI, so it matches the
-    // other modules' "Off" default rather than auto-selecting embedded subs.
+    // subTrack -2 = --sid=no: this module has no subtitle picker, so it matches
+    // the other modules' "Off" default rather than auto-selecting embedded subs.
     Timer {
         id: startTimer
         interval: 50
@@ -83,32 +114,15 @@ FocusScope {
 
         // Shown while the stream is checked and mpv launches/buffers, before
         // mpv's window takes over. Replaced by the error state when the server
-        // cannot hand over a playable stream.
-        Column {
+        // cannot hand over a playable stream. Deliberately just "LOADING..."
+        // like the other modules' players.
+        Text {
             anchors.centerIn: parent
-            spacing: root.sh * 0.0333333 //16
             visible: playerRoot.errorMessage === ""
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                width: root.sw * 0.76875 //492
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.WordWrap
-                text: playerRoot.streamTitle
-                color: "white"
-                font.family: root.globalFont
-                font.capitalization: Font.AllUppercase
-                font.pixelSize: root.sh * 0.0333333 //16
-                visible: playerRoot.streamTitle !== ""
-            }
-
-            Text {
-                anchors.horizontalCenter: parent.horizontalCenter
-                text: "LOADING..."
-                color: "white"
-                font.family: root.globalFont
-                font.pixelSize: root.sh * 0.05 //24
-            }
+            text: "LOADING..."
+            color: "white"
+            font.family: root.globalFont
+            font.pixelSize: root.sh * 0.05 //24
         }
 
         Column {
