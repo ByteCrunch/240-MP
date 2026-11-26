@@ -10,18 +10,20 @@ FocusScope {
     property var item: navParams.item || ({})
     property string streamUrl: item.streamUrl || ""
     property string streamTitle: item.title || ""
+    property string errorMessage: ""
 
     signal goBack()
 
     focus: true
     Keys.onPressed: function(event) {
-        // Only reachable before mpv starts, or when a scene has no stream at
-        // all (the Scenes view already filters those out, so this is a guard).
         if (event.key === Qt.Key_Escape || event.key === Qt.Key_Backspace || event.key === Qt.Key_Back) {
-            if (playerRoot.streamUrl === "") {
-                goBack()
-                event.accepted = true
-            }
+            goBack()
+            event.accepted = true
+        } else if ((event.key === Qt.Key_Return || event.key === Qt.Key_Enter)
+                   && playerRoot.errorMessage !== "") {
+            // Retry after a failed preflight.
+            playerRoot.checkStream()
+            event.accepted = true
         }
     }
 
@@ -38,9 +40,31 @@ FocusScope {
         onTriggered: mpvController.loadAndPlay(playerRoot.streamUrl, 0, 0, -2)
     }
 
-    Component.onCompleted: {
-        if (playerRoot.streamUrl !== "")
+    // mpv can only report "unrecognized file format" when a reverse proxy
+    // answers a stream request with a login page, so ask the backend to check
+    // first and show something actionable instead of a black screen.
+    function checkStream() {
+        if (playerRoot.streamUrl === "") {
+            playerRoot.errorMessage = "NO PLAYABLE STREAM"
+            return
+        }
+        playerRoot.errorMessage = ""
+        stashBackend.check_stream(playerRoot.streamUrl)
+    }
+
+    Component.onCompleted: playerRoot.checkStream()
+
+    Connections {
+        target: stashBackend
+
+        function onStreamCheckFinished(ok, error) {
+            if (!ok) {
+                playerRoot.errorMessage = error
+                console.log("[Stash Player] stream check failed: " + error.replace(/\n/g, " | "))
+                return
+            }
             startTimer.start()
+        }
     }
 
     Connections {
@@ -57,11 +81,13 @@ FocusScope {
         anchors.fill: parent
         color: "black"
 
-        // Shown while mpv launches and buffers the stream (before its window
-        // takes over).
+        // Shown while the stream is checked and mpv launches/buffers, before
+        // mpv's window takes over. Replaced by the error state when the server
+        // cannot hand over a playable stream.
         Column {
             anchors.centerIn: parent
             spacing: root.sh * 0.0333333 //16
+            visible: playerRoot.errorMessage === ""
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
@@ -78,10 +104,36 @@ FocusScope {
 
             Text {
                 anchors.horizontalCenter: parent.horizontalCenter
-                text: playerRoot.streamUrl === "" ? "NO PLAYABLE STREAM" : "LOADING..."
+                text: "LOADING..."
                 color: "white"
                 font.family: root.globalFont
                 font.pixelSize: root.sh * 0.05 //24
+            }
+        }
+
+        Column {
+            anchors.centerIn: parent
+            spacing: root.sh * 0.05 //36
+            visible: playerRoot.errorMessage !== ""
+
+            Text {
+                id: errorText
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: root.sw * 0.76875 //492
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                text: playerRoot.errorMessage
+                color: "white"
+                font.family: root.globalFont
+                font.pixelSize: root.sh * 0.0333333 //16
+            }
+
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: root.hints.select + ":RETRY  " + root.hints.back + ":BACK"
+                color: "#a0a0a0"
+                font.family: root.globalFont
+                font.pixelSize: root.sh * 0.0333333 //16
             }
         }
     }

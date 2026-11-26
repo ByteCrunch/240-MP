@@ -54,10 +54,15 @@ public:
     Q_INVOKABLE void load_scenes(const QVariantMap &findFilter, const QVariantMap &objectFilter);
     Q_INVOKABLE void load_scenes_for_tag(const QString &tagId);
 
+    // Preflight for the Player: a reverse proxy or SSO in front of Stash
+    // can redirect /scene/…/stream to a login page which is unreadable for mpv.
+    Q_INVOKABLE void check_stream(const QString &url);
+
 signals:
     void savedFiltersLoaded(const QVariant &filters);
     void tagsLoaded(const QVariant &tags);
     void scenesLoaded(const QVariant &scenes);
+    void streamCheckFinished(bool ok, const QString &error);
     void errorOccurred(const QString &message);
 
 private:
@@ -69,6 +74,13 @@ private:
     // the saved query/sort is kept, but page/per_page are forced so the module
     // always receives the whole list.
     static QJsonObject sceneFindFilter(const QVariantMap &savedFindFilter);
+    // Stash stores a saved filter's object_filter in its *UI* shape
+    // ({modifier, value: {items: [{id,label}], depth, excluded}} and
+    // {modifier, value: {value, value2}}), which is not a valid SceneFilterType
+    // input. This converts it to the GraphQL shape
+    // ({value: [id], depth, excludes} / {value, value2}).
+    static QJsonObject sceneFilterInput(const QVariantMap &savedObjectFilter);
+    static QJsonValue criterionInput(const QString &key, const QVariant &savedCriterion);
     // "ALL SCENES" first, then the server's saved scene filters by name.
     static QVariantList buildFilterRows(const QJsonArray &savedFilters);
     // SceneFilterType that matches scenes carrying the given tag.

@@ -19,6 +19,9 @@ struct StashBackendTestPeer {
     static QJsonObject sceneFilterForTag(const QString &tagId) {
         return StashBackend::sceneFilterForTag(tagId);
     }
+    static QJsonObject sceneFilterInput(const QVariantMap &savedObjectFilter) {
+        return StashBackend::sceneFilterInput(savedObjectFilter);
+    }
     static QVariantMap formatScene(const QJsonObject &scene, const QString &serverUrl) {
         return StashBackend::formatScene(scene, serverUrl);
     }
@@ -35,6 +38,12 @@ private slots:
     void filterRowsPutAllScenesFirst();
     void filterRowsSortByNameAndSkipBlankNames();
     void tagFilterUsesIncludesWithoutDepth();
+    void savedFilterBecomesGraphqlInput();
+    void savedFilterBooleanCriterionBecomesBool();
+    void savedFilterIsNullKeepsRequiredValue();
+    void savedFilterNestedFilterIsConverted();
+    void savedFilterResolutionBecomesEnum();
+    void savedFilterUnknownResolutionIsDropped();
     void sceneTitleUsesStashTitle();
     void sceneTitleFallsBackToFilename();
     void sceneTitleFallsBackToId();
@@ -141,6 +150,157 @@ void StashBackendTest::tagFilterUsesIncludesWithoutDepth() {
     QCOMPARE(int(values.size()), 1);
     QCOMPARE(values.first().toString(), QStringLiteral("tag-7"));
     QVERIFY(!tags.contains(QStringLiteral("depth")));
+}
+
+void StashBackendTest::savedFilterBecomesGraphqlInput() {
+    // Shape taken verbatim from a real Stash 0.32 saved filter
+    // (findSavedFilters(mode: SCENES) → object_filter).
+    auto labeled = [](const QString &id, const QString &label) {
+        return QVariantMap{{"id", id}, {"label", label}};
+    };
+    auto listValue = [&](const QVariantList &items) {
+        return QVariantMap{{"items", items},
+                           {"excluded", QVariantList{}},
+                           {"depth", 0}};
+    };
+
+    QVariantMap studios;
+    studios["modifier"] = "INCLUDES";
+    studios["value"] = listValue({labeled("16", "Brat Princess")});
+
+    QVariantMap tags;
+    tags["modifier"] = "INCLUDES_ALL";
+    tags["value"] = listValue({labeled("411", "Cock Milking Machine")});
+
+    QVariantMap created;
+    created["modifier"] = "BETWEEN";
+    created["value"] = QVariantMap{{"value", "2020-12-31"}, {"value2", "2022-01-01"}};
+
+    QVariantMap rating;
+    rating["modifier"] = "NOT_NULL";
+    rating["value"] = QVariantMap{{"value", 0}};
+
+    QVariantMap resolution;
+    resolution["modifier"] = "EQUALS";
+    resolution["value"] = "1080P";
+
+    QVariantMap filter;
+    filter["studios"] = studios;
+    filter["tags"] = tags;
+    filter["created_at"] = created;
+    filter["rating100"] = rating;
+    filter["resolution"] = resolution;
+
+    const QJsonObject out = StashBackendTestPeer::sceneFilterInput(filter);
+
+    const QJsonObject studioCriterion = out["studios"].toObject();
+    QCOMPARE(studioCriterion["modifier"].toString(), QStringLiteral("INCLUDES"));
+    QCOMPARE(studioCriterion["value"].toArray().first().toString(), QStringLiteral("16"));
+    QCOMPARE(studioCriterion["depth"].toInt(), 0);
+
+    const QJsonObject tagCriterion = out["tags"].toObject();
+    QCOMPARE(tagCriterion["modifier"].toString(), QStringLiteral("INCLUDES_ALL"));
+    QCOMPARE(tagCriterion["value"].toArray().first().toString(), QStringLiteral("411"));
+
+    const QJsonObject dateCriterion = out["created_at"].toObject();
+    QCOMPARE(dateCriterion["modifier"].toString(), QStringLiteral("BETWEEN"));
+    QCOMPARE(dateCriterion["value"].toString(), QStringLiteral("2020-12-31"));
+    QCOMPARE(dateCriterion["value2"].toString(), QStringLiteral("2022-01-01"));
+
+    const QJsonObject ratingCriterion = out["rating100"].toObject();
+    QCOMPARE(ratingCriterion["modifier"].toString(), QStringLiteral("NOT_NULL"));
+    QCOMPARE(ratingCriterion["value"].toInt(), 0);
+
+    // The UI label is translated to the GraphQL enum member.
+    const QJsonObject resolutionCriterion = out["resolution"].toObject();
+    QCOMPARE(resolutionCriterion["modifier"].toString(), QStringLiteral("EQUALS"));
+    QCOMPARE(resolutionCriterion["value"].toString(), QStringLiteral("FULL_HD"));
+}
+
+void StashBackendTest::savedFilterResolutionBecomesEnum() {
+    QVariantMap resolution;
+    resolution["modifier"] = "EQUALS";
+    resolution["value"] = "4k";        // lowercase, as Stash's UI stores it
+
+    QVariantMap filter;
+    filter["resolution"] = resolution;
+
+    const QJsonObject out = StashBackendTestPeer::sceneFilterInput(filter);
+    QCOMPARE(out["resolution"].toObject()["value"].toString(), QStringLiteral("FOUR_K"));
+}
+
+void StashBackendTest::savedFilterUnknownResolutionIsDropped() {
+    // An unrecognised label must not fail the whole filter list.
+    QVariantMap resolution;
+    resolution["modifier"] = "EQUALS";
+    resolution["value"] = "not-a-resolution";
+
+    QVariantMap tags;
+    tags["modifier"] = "INCLUDES";
+    tags["value"] = QVariantMap{{"items", QVariantList{}},
+                                {"excluded", QVariantList{}},
+                                {"depth", 0}};
+
+    QVariantMap filter;
+    filter["resolution"] = resolution;
+    filter["tags"] = tags;
+
+    const QJsonObject out = StashBackendTestPeer::sceneFilterInput(filter);
+    QVERIFY(!out.contains(QStringLiteral("resolution")));
+    QVERIFY(out.contains(QStringLiteral("tags")));
+}
+
+void StashBackendTest::savedFilterBooleanCriterionBecomesBool() {
+    // The UI stores booleans as the strings "true"/"false"; the API wants a
+    // real JSON boolean for `organized` / `interactive`.
+    QVariantMap organized;
+    organized["modifier"] = "EQUALS";
+    organized["value"] = "true";
+
+    QVariantMap filter;
+    filter["organized"] = organized;
+
+    const QJsonObject out = StashBackendTestPeer::sceneFilterInput(filter);
+    QCOMPARE(out["organized"].type(), QJsonValue::Bool);
+    QCOMPARE(out["organized"].toBool(), true);
+}
+
+void StashBackendTest::savedFilterIsNullKeepsRequiredValue() {
+    // IntCriterionInput requires `value`, so IS_NULL / NOT_NULL without a saved
+    // number still has to send one.
+    QVariantMap rating;
+    rating["modifier"] = "IS_NULL";
+
+    QVariantMap filter;
+    filter["rating100"] = rating;
+
+    const QJsonObject out = StashBackendTestPeer::sceneFilterInput(filter);
+    QCOMPARE(out["rating100"].toObject()["value"].toInt(), 0);
+    QCOMPARE(out["rating100"].toObject()["value"].type(), QJsonValue::Double);
+}
+
+void StashBackendTest::savedFilterNestedFilterIsConverted() {
+    auto labeled = [](const QString &id) {
+        return QVariantMap{{"id", id}, {"label", id}};
+    };
+    QVariantMap performers;
+    performers["modifier"] = "INCLUDES";
+    performers["value"] = QVariantMap{{"items", QVariantList{labeled("7")}},
+                                      {"excluded", QVariantList{}},
+                                      {"depth", 0}};
+    QVariantMap nested;
+    nested["performers"] = performers;
+
+    QVariantMap filter;
+    filter["performers_filter"] = nested;
+
+    const QJsonObject out = StashBackendTestPeer::sceneFilterInput(filter);
+    const QJsonObject nestedOut = out["performers_filter"].toObject();
+    QVERIFY(!nestedOut.isEmpty());
+    QCOMPARE(nestedOut["performers"].toObject()["value"].toArray().first().toString(),
+             QStringLiteral("7"));
+    // performers is a MultiCriterionInput, so no depth must leak into it.
+    QVERIFY(!nestedOut["performers"].toObject().contains(QStringLiteral("depth")));
 }
 
 void StashBackendTest::sceneTitleUsesStashTitle() {

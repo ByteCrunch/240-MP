@@ -208,23 +208,35 @@ void StashBackend::postGraphql(const QString &query, const QJsonObject &variable
         reply->deleteLater();
 
         const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray body = reply->readAll();
+
+        // Stash answers a bad filter/query with 422 and a GraphQL error body, so
+        // prefer the server's own message over Qt's generic transport text.
+        QJsonParseError err;
+        const QJsonDocument doc = QJsonDocument::fromJson(body, &err);
+        const bool jsonBody = err.error == QJsonParseError::NoError && doc.isObject();
+        const QJsonArray errors = jsonBody ? doc.object()["errors"].toArray() : QJsonArray();
+
         if (reply->error() != QNetworkReply::NoError) {
-            if (status == 401 || status == 403)
+            if (!errors.isEmpty()) {
+                QString message = errors.first().toObject()["message"].toString().trimmed();
+                if (message.isEmpty())
+                    message = reply->errorString();
+                emit errorOccurred(errorPrefix + ": " + message);
+            } else if (status == 401 || status == 403) {
                 emit errorOccurred(QStringLiteral("AUTH FAILED - CHECK APIKEY IN STASH.JSON"));
-            else
+            } else {
                 emit errorOccurred(errorPrefix + ": " + reply->errorString());
+            }
             return;
         }
 
-        QJsonParseError err;
-        const QJsonDocument doc = QJsonDocument::fromJson(reply->readAll(), &err);
-        if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        if (!jsonBody) {
             emit errorOccurred(QStringLiteral("INVALID RESPONSE FROM SERVER - CHECK SERVERURL"));
             return;
         }
 
         const QJsonObject root = doc.object();
-        const QJsonArray errors = root["errors"].toArray();
         if (!errors.isEmpty()) {
             QString message = errors.first().toObject()["message"].toString().trimmed();
             if (message.isEmpty())
@@ -296,6 +308,208 @@ QVariantList StashBackend::buildFilterRows(const QJsonArray &savedFilters) {
     });
     rows.append(saved);
     return rows;
+}
+
+namespace {
+
+// GraphQL SceneFilterType fields whose CriterionInput is a bare Boolean.
+const QSet<QString> kBooleanFields = {
+    QStringLiteral("organized"),
+    QStringLiteral("interactive"),
+};
+
+// ...whose input is a plain String rather than {value, modifier}.
+const QSet<QString> kPlainStringFields = {
+    QStringLiteral("has_markers"),
+    QStringLiteral("is_missing"),
+};
+
+// ...whose CriterionInput takes a non-optional numeric `value`, so IS_NULL /
+// NOT_NULL still needs a number (the Stash UI sends 0).
+const QSet<QString> kIntFields = {
+    QStringLiteral("rating100"),      QStringLiteral("o_counter"),
+    QStringLiteral("file_count"),     QStringLiteral("framerate"),
+    QStringLiteral("bitrate"),        QStringLiteral("duration"),
+    QStringLiteral("tag_count"),      QStringLiteral("performer_count"),
+    QStringLiteral("performer_age"),  QStringLiteral("interactive_speed"),
+    QStringLiteral("resume_time"),    QStringLiteral("play_count"),
+    QStringLiteral("play_duration"),  QStringLiteral("stash_id_count"),
+};
+
+// ...whose CriterionInput is HierarchicalMultiCriterionInput (takes `depth`);
+// every other list criterion is a MultiCriterionInput, which would reject it.
+const QSet<QString> kHierarchicalFields = {
+    QStringLiteral("studios"),
+    QStringLiteral("tags"),
+    QStringLiteral("groups"),
+    QStringLiteral("performer_tags"),
+};
+
+// Saved filters store the resolution as the UI's label ("4k", "1080p", "Huge"),
+// not as the GraphQL ResolutionEnum member.
+QString resolutionEnumValue(const QString &label) {
+    static const QHash<QString, QString> kMap = {
+        {QStringLiteral("144p"),  QStringLiteral("VERY_LOW")},
+        {QStringLiteral("240p"),  QStringLiteral("LOW")},
+        {QStringLiteral("360p"),  QStringLiteral("R360P")},
+        {QStringLiteral("480p"),  QStringLiteral("STANDARD")},
+        {QStringLiteral("540p"),  QStringLiteral("WEB_HD")},
+        {QStringLiteral("720p"),  QStringLiteral("STANDARD_HD")},
+        {QStringLiteral("1080p"), QStringLiteral("FULL_HD")},
+        {QStringLiteral("1440p"), QStringLiteral("QUAD_HD")},
+        {QStringLiteral("4k"),    QStringLiteral("FOUR_K")},
+        {QStringLiteral("5k"),    QStringLiteral("FIVE_K")},
+        {QStringLiteral("6k"),    QStringLiteral("SIX_K")},
+        {QStringLiteral("7k"),    QStringLiteral("SEVEN_K")},
+        {QStringLiteral("8k"),    QStringLiteral("EIGHT_K")},
+        {QStringLiteral("huge"),  QStringLiteral("HUGE")},
+    };
+    return kMap.value(label.trimmed().toLower());
+}
+
+// Deep-converts a QML/QVariant value into JSON (keeps nested maps/lists intact).
+QJsonValue toJsonValue(const QVariant &v) {
+    const int type = v.metaType().id();
+    if (type == QMetaType::QVariantMap || type == QMetaType::QVariantHash) {
+        const QVariantMap map = v.toMap();
+        QJsonObject obj;
+        for (auto it = map.constBegin(); it != map.constEnd(); ++it)
+            obj.insert(it.key(), toJsonValue(it.value()));
+        return obj;
+    }
+    if (type == QMetaType::QVariantList || type == QMetaType::QStringList) {
+        QJsonArray arr;
+        const QVariantList list = v.toList();
+        for (const QVariant &item : list)
+            arr.append(toJsonValue(item));
+        return arr;
+    }
+    if (!v.isValid())
+        return QJsonValue::Null;
+    return QJsonValue::fromVariant(v);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Saved-filter object_filter → SceneFilterType input
+// ---------------------------------------------------------------------------
+//
+// Stash's UI stores a saved filter's criteria in its own shape, which the API
+// rejects if replayed verbatim:
+//
+//   "tags":     {"modifier":"INCLUDES_ALL",
+//                "value":{"depth":0,"excluded":[],"items":[{"id":"411","label":"…"}]}}
+//   "created_at":{"modifier":"BETWEEN","value":{"value":"2020-12-31","value2":"2022-01-01"}}
+//   "organized": {"modifier":"EQUALS","value":"true"}
+//
+// The GraphQL inputs want:
+//
+//   "tags":     {"modifier":"INCLUDES_ALL","value":["411"],"depth":0,"excludes":[]}
+//   "created_at":{"modifier":"BETWEEN","value":"2020-12-31","value2":"2022-01-01"}
+//   "organized": true
+//
+// (mirrors ui/v2.5/src/models/list-filter/criteria/criterion.ts toCriterionInput)
+
+QJsonValue StashBackend::criterionInput(const QString &key, const QVariant &savedCriterion) {
+    if (savedCriterion.metaType().id() != QMetaType::QVariantMap)
+        return toJsonValue(savedCriterion);
+
+    const QVariantMap criterion = savedCriterion.toMap();
+    if (!criterion.contains(QStringLiteral("modifier")))
+        return toJsonValue(savedCriterion);
+
+    const QString modifier = criterion.value(QStringLiteral("modifier")).toString();
+    const QVariant value = criterion.value(QStringLiteral("value"));
+
+    if (kBooleanFields.contains(key)) {
+        const QString text = value.toString().trimmed().toLower();
+        return text == QLatin1String("true");
+    }
+    if (kPlainStringFields.contains(key))
+        return QJsonValue(value.toString());
+
+    // Resolution is the one criterion whose value has to be translated to an
+    // enum member; an unknown label drops the criterion (as the Stash UI does)
+    // rather than failing the whole list.
+    if (key == QLatin1String("resolution")) {
+        const QString enumValue = resolutionEnumValue(value.toString());
+        if (enumValue.isEmpty())
+            return QJsonValue(QJsonValue::Undefined);
+        QJsonObject input;
+        input["modifier"] = modifier;
+        input["value"] = enumValue;
+        return input;
+    }
+
+    QJsonObject input;
+    input["modifier"] = modifier;
+
+    if (value.metaType().id() == QMetaType::QVariantMap) {
+        const QVariantMap val = value.toMap();
+
+        if (val.contains(QStringLiteral("items"))) {
+            // List criterion: [{id,label}] → [id]; the UI keeps excluded ids and
+            // the include-descendants depth alongside them.
+            QJsonArray ids;
+            for (const QVariant &item : val.value(QStringLiteral("items")).toList())
+                ids.append(item.toMap().value(QStringLiteral("id")).toString());
+            input["value"] = ids;
+
+            QJsonArray excludes;
+            for (const QVariant &item : val.value(QStringLiteral("excluded")).toList())
+                excludes.append(item.toMap().value(QStringLiteral("id")).toString());
+            if (!excludes.isEmpty())
+                input["excludes"] = excludes;
+
+            if (kHierarchicalFields.contains(key)) {
+                // EQUALS means "this exact tag/studio", i.e. no descendants.
+                input["depth"] = modifier == QLatin1String("EQUALS")
+                                     ? 0
+                                     : val.value(QStringLiteral("depth")).toInt();
+            }
+        } else {
+            // Range criterion: {value, value2} → flat value / value2.
+            const QVariant inner = val.value(QStringLiteral("value"));
+            const QVariant inner2 = val.value(QStringLiteral("value2"));
+            if (inner.isValid() && !inner.isNull())
+                input["value"] = toJsonValue(inner);
+            else if (kIntFields.contains(key))
+                input["value"] = 0;
+            if (inner2.isValid() && !inner2.isNull())
+                input["value2"] = toJsonValue(inner2);
+        }
+        return input;
+    }
+
+    if (!value.isValid() || value.isNull()) {
+        // IntCriterionInput requires a value even for IS_NULL / NOT_NULL.
+        if (kIntFields.contains(key))
+            input["value"] = 0;
+        return input;
+    }
+
+    input["value"] = toJsonValue(value);
+    return input;
+}
+
+QJsonObject StashBackend::sceneFilterInput(const QVariantMap &savedObjectFilter) {
+    QJsonObject out;
+    for (auto it = savedObjectFilter.constBegin(); it != savedObjectFilter.constEnd(); ++it) {
+        // Nested filters (performers_filter, files_filter, …) carry the same
+        // criterion shapes one level down.
+        if (it.key().endsWith(QLatin1String("_filter"))
+            && it.value().metaType().id() == QMetaType::QVariantMap) {
+            out.insert(it.key(), sceneFilterInput(it.value().toMap()));
+            continue;
+        }
+        const QJsonValue criterion = criterionInput(it.key(), it.value());
+        // Undefined means "this criterion cannot be expressed" (e.g. an
+        // unrecognised resolution label) — omit it instead of sending bad input.
+        if (!criterion.isUndefined())
+            out.insert(it.key(), criterion);
+    }
+    return out;
 }
 
 QJsonObject StashBackend::sceneFilterForTag(const QString &tagId) {
@@ -411,8 +625,9 @@ void StashBackend::requestScenes(const QJsonObject &variables) {
 void StashBackend::load_scenes(const QVariantMap &findFilter, const QVariantMap &objectFilter) {
     QJsonObject variables;
     variables["filter"] = sceneFindFilter(findFilter);
+    // Saved filters arrive in the UI shape — convert before sending.
     if (!objectFilter.isEmpty())
-        variables["sceneFilter"] = QJsonObject::fromVariantMap(objectFilter);
+        variables["sceneFilter"] = sceneFilterInput(objectFilter);
     requestScenes(variables);
 }
 
@@ -426,4 +641,73 @@ void StashBackend::load_scenes_for_tag(const QString &tagId) {
     variables["filter"] = sceneFindFilter({});
     variables["sceneFilter"] = sceneFilterForTag(tagId);
     requestScenes(variables);
+}
+
+void StashBackend::check_stream(const QString &url) {
+    if (url.isEmpty()) {
+        emit streamCheckFinished(false, QStringLiteral("NO PLAYABLE STREAM"));
+        return;
+    }
+
+    QNetworkRequest req{QUrl(url)};
+    // Do not follow a redirect: it is exactly the case we want to report.
+    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                     QNetworkRequest::ManualRedirectPolicy);
+    req.setRawHeader("Range", "bytes=0-1023");
+
+    auto *reply = m_nam->get(req);
+    ignoreSslErrors(reply);
+
+    // Capture the original URL: Qt follows redirects regardless of the request
+    // policy and updates both url() and request().url() to the final target, so
+    // only a copy taken here can tell us the stream was bounced.
+    const QUrl requested{QUrl(url)};
+
+    connect(reply, &QNetworkReply::finished, this, [this, reply, requested]() {
+        reply->deleteLater();
+
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QString contentType =
+            reply->header(QNetworkRequest::ContentTypeHeader).toString().toLower();
+        const QString proxyHint =
+            QStringLiteral("\n\nA REVERSE PROXY OR LOGIN PAGE IS IN FRONT OF STASH\n"
+                           "SEE MODULES/STASH/README.MD");
+
+        const QUrl landed(reply->url());
+        if (!landed.isEmpty() && landed.host() != requested.host()) {
+            emit streamCheckFinished(
+                false,
+                QStringLiteral("STREAM REDIRECTED TO %1").arg(landed.host()) + proxyHint);
+            return;
+        }
+        if (status >= 300 && status < 400) {
+            const QString target =
+                reply->attribute(QNetworkRequest::RedirectionTargetAttribute).toUrl().host();
+            emit streamCheckFinished(
+                false,
+                QStringLiteral("STREAM WAS REDIRECTED%1")
+                        .arg(target.isEmpty() ? QString() : QStringLiteral(" TO ") + target)
+                    + proxyHint);
+            return;
+        }
+        if (status == 401 || status == 403) {
+            emit streamCheckFinished(
+                false,
+                QStringLiteral("STREAM REFUSED (HTTP %1)").arg(status) + proxyHint);
+            return;
+        }
+        if (reply->error() != QNetworkReply::NoError) {
+            emit streamCheckFinished(false, reply->errorString());
+            return;
+        }
+        // A proxy that answers 200 with an HTML page (rather than redirecting)
+        // would otherwise reach mpv as an unreadable file.
+        if (contentType.startsWith(QLatin1String("text/html"))) {
+            emit streamCheckFinished(
+                false, QStringLiteral("THE SERVER RETURNED A LOGIN PAGE") + proxyHint);
+            return;
+        }
+
+        emit streamCheckFinished(true, QString());
+    });
 }
