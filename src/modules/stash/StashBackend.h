@@ -81,6 +81,9 @@ private:
     // ({value: [id], depth, excludes} / {value, value2}).
     static QJsonObject sceneFilterInput(const QVariantMap &savedObjectFilter);
     static QJsonValue criterionInput(const QString &key, const QVariant &savedCriterion);
+    // Human label for a file height, using Stash's own bucket boundaries
+    // (pkg/models/resolution.go: 1080-1439 = FULL_HD, 1920-2559 = FOUR_K, …).
+    static QString resolutionLabel(int height);
     // "ALL SCENES" first, then the server's saved scene filters by name.
     static QVariantList buildFilterRows(const QJsonArray &savedFilters);
     // SceneFilterType that matches scenes carrying the given tag.

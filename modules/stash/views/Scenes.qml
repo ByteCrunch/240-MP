@@ -112,7 +112,18 @@ FocusScope {
         font.pixelSize: root.sh * 0.05 //24
     }
 
-    // Body — title plus tags, marquee-scrolled when the row is longer than the list
+    // Secondary line under the title: studio · resolution · tags, only the parts
+    // the scene actually has. Built here so the delegate stays declarative.
+    function metaLine(item) {
+        var parts = []
+        if (item.studio)     parts.push(item.studio)
+        if (item.resolution) parts.push(item.resolution)
+        if (item.tagsText)   parts.push(item.tagsText)
+        return parts.join(" · ")
+    }
+
+    // Body — title first, then the studio/resolution/tags line in the smaller
+    // two-line style the YouTube module uses for its video lists.
     ListView {
         id: sceneList
         model: scenesRoot.scenes
@@ -141,50 +152,69 @@ FocusScope {
 
         delegate: Item {
             width: sceneList.width
-            height: root.sh * 0.0583333 //28
+            height: root.sh * 0.075 //36 — two lines, matching the YouTube list rows
 
-            Item {
-                id: textClip
-                width: Math.min(rowText.implicitWidth, sceneList.width)
-                height: parent.height
-                clip: true
+            // Full-width background highlight for the active row
+            Rectangle {
+                color: root.accentColor
+                anchors.fill: parent
+                visible: sceneList.currentIndex === index
+            }
 
-                Rectangle {
-                    color: root.accentColor
-                    anchors.fill: rowText
-                    visible: sceneList.currentIndex === index
+            Column {
+                id: textColumn
+                anchors.left: parent.left
+                anchors.leftMargin: root.sw * 0.0109375 //7
+                anchors.right: parent.right
+                anchors.rightMargin: root.sw * 0.0109375 //7
+                anchors.verticalCenter: parent.verticalCenter
+                spacing: root.sh * 0.0041667 //2
+
+                // Clipped title with marquee scroll when it overflows the row
+                Item {
+                    id: titleClip
+                    width: Math.min(titleLabel.implicitWidth, textColumn.width)
+                    height: titleLabel.implicitHeight
+                    clip: true
+
+                    Text {
+                        id: titleLabel
+                        text: modelData.title || ""
+                        color: sceneList.currentIndex === index ? root.surfaceColor : root.primaryColor
+                        font.family: root.globalFont
+                        font.capitalization: Font.AllUppercase
+                        font.pixelSize: root.sh * 0.0333333 //16
+                        x: 0
+                    }
+
+                    SequentialAnimation {
+                        running: (sceneList.currentIndex === index) &&
+                                 (titleLabel.implicitWidth > titleClip.width)
+                        loops: Animation.Infinite
+                        onRunningChanged: if (!running) titleLabel.x = 0
+                        PauseAnimation { duration: 1500 }
+                        NumberAnimation {
+                            target: titleLabel; property: "x"
+                            to: titleClip.width - titleLabel.implicitWidth
+                            duration: Math.abs(to) * 20
+                        }
+                        PauseAnimation { duration: 2000 }
+                        PropertyAction { target: titleLabel; property: "x"; value: 0 }
+                    }
                 }
 
                 Text {
-                    id: rowText
-                    text: modelData.tagsText
-                          ? (modelData.title || "") + " - " + modelData.tagsText
-                          : (modelData.title || "")
-                    color: sceneList.currentIndex === index ? root.surfaceColor : root.primaryColor
+                    id: metaLabel
+                    // Elide rather than marquee: the metadata is secondary, so a
+                    // long tag list shouldn't scroll the row.
+                    text: scenesRoot.metaLine(modelData)
+                    width: textColumn.width
+                    elide: Text.ElideRight
+                    visible: text !== ""
+                    color: sceneList.currentIndex === index ? root.surfaceColor : root.secondaryColor
                     font.family: root.globalFont
                     font.capitalization: Font.AllUppercase
-                    anchors.verticalCenter: parent.verticalCenter
-                    x: 0
-                    topPadding: root.sh * 0.0041667 //2
-                    leftPadding: root.sw * 0.009375 //6
-                    rightPadding: root.sw * 0.009375 //6
-                    bottomPadding: root.sh * 0.00625 //3
-                    font.pixelSize: root.sh * 0.05 //24
-                }
-
-                SequentialAnimation {
-                    running: (sceneList.currentIndex === index) &&
-                             (rowText.implicitWidth > textClip.width)
-                    loops: Animation.Infinite
-                    onRunningChanged: if (!running) rowText.x = 0
-                    PauseAnimation { duration: 1500 }
-                    NumberAnimation {
-                        target: rowText; property: "x"
-                        to: textClip.width - rowText.implicitWidth
-                        duration: Math.abs(to) * 20
-                    }
-                    PauseAnimation { duration: 2000 }
-                    PropertyAction { target: rowText; property: "x"; value: 0 }
+                    font.pixelSize: root.sh * 0.0208333 //10
                 }
             }
         }

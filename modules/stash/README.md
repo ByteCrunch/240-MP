@@ -37,7 +37,7 @@ Stash **v0.23 or newer** is required: the module replays saved filters through `
 
 - **Scenes** — `ALL SCENES` plus every saved scene filter on the server, sorted by name. Selecting one lists that filter's scenes.
 - **Tags** — every tag, sorted by name. Selecting one lists the scenes that carry that tag.
-- Scene rows show the scene title followed by its tags. Untitled scenes fall back to the video filename, then to `SCENE <id>`.
+- Scene rows lead with the title (falling back to the video filename, then `SCENE <id>`.
 - Selecting a scene plays it fullscreen through mpv; exiting returns to the same position in the list.
 - Subtitles start off (`--sid=no`), matching the other modules' default. There is no subtitle picker in this module.
 

@@ -59,8 +59,9 @@ query FindScenes($filter: FindFilterType, $sceneFilter: SceneFilterType) {
     scenes {
       id
       title
-      files { basename duration }
+      files { basename duration height }
       paths { stream }
+      studio { name }
       tags { id name }
     }
   }
@@ -345,6 +346,9 @@ const QSet<QString> kHierarchicalFields = {
     QStringLiteral("performer_tags"),
 };
 
+// How many tag names a scene row shows before summarising the rest.
+constexpr int kMaxTagsInRow = 3;
+
 // Saved filters store the resolution as the UI's label ("4k", "1080p", "Huge"),
 // not as the GraphQL ResolutionEnum member.
 QString resolutionEnumValue(const QString &label) {
@@ -523,11 +527,32 @@ QJsonObject StashBackend::sceneFilterForTag(const QString &tagId) {
     return sceneFilter;
 }
 
+QString StashBackend::resolutionLabel(int height) {
+    // Boundaries mirror Stash's ResolutionEnum ranges; the label is what its UI
+    // shows for a file of that height.
+    if (height <= 0)        return QString();
+    if (height < 240)       return QStringLiteral("144P");
+    if (height < 360)       return QStringLiteral("240P");
+    if (height < 480)       return QStringLiteral("360P");
+    if (height < 540)       return QStringLiteral("480P");
+    if (height < 720)       return QStringLiteral("540P");
+    if (height < 1080)      return QStringLiteral("720P");
+    if (height < 1440)      return QStringLiteral("1080P");
+    if (height < 1920)      return QStringLiteral("1440P");
+    if (height < 2560)      return QStringLiteral("4K");
+    if (height < 3000)      return QStringLiteral("5K");
+    if (height < 3584)      return QStringLiteral("6K");
+    if (height < 3840)      return QStringLiteral("7K");
+    if (height < 6144)      return QStringLiteral("8K");
+    return QStringLiteral("8K+");
+}
+
 QVariantMap StashBackend::formatScene(const QJsonObject &scene, const QString &serverUrl) {
     const QJsonArray files = scene["files"].toArray();
     const QJsonObject file = files.isEmpty() ? QJsonObject() : files.first().toObject();
 
-    // Stash scenes are often untitled and identified by filename only.
+    // Stash scenes are often untitled and identified by filename only, so the
+    // title falls back to the file's base name and then to the scene id.
     QString title = scene["title"].toString().trimmed();
     if (title.isEmpty()) {
         const QString basename = file["basename"].toString().trimmed();
@@ -542,6 +567,13 @@ QVariantMap StashBackend::formatScene(const QJsonObject &scene, const QString &s
         const QString name = v.toObject()["name"].toString().trimmed();
         if (!name.isEmpty())
             tagNames.append(name);
+    }
+    // Stash's UI lists the first few tags on a card; the list row is one line,
+    // so a long tag list would only push the title off screen.
+    QString tagsText = tagNames.join(QStringLiteral(", "));
+    if (tagNames.size() > kMaxTagsInRow) {
+        tagsText = tagNames.mid(0, kMaxTagsInRow).join(QStringLiteral(", "))
+                 + QStringLiteral(", +%1 MORE").arg(tagNames.size() - kMaxTagsInRow);
     }
 
     // Stash builds paths.stream from the request's base URL (honouring
@@ -561,7 +593,9 @@ QVariantMap StashBackend::formatScene(const QJsonObject &scene, const QString &s
     QVariantMap map;
     map["itemId"] = scene["id"].toString();
     map["title"] = title;
-    map["tagsText"] = tagNames.join(QStringLiteral(", "));
+    map["studio"] = scene["studio"].toObject()["name"].toString().trimmed();
+    map["resolution"] = resolutionLabel(file["height"].toInt());
+    map["tagsText"] = tagsText;
     map["streamUrl"] = streamUrl;
     return map;
 }

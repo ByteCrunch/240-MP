@@ -25,6 +25,9 @@ struct StashBackendTestPeer {
     static QVariantMap formatScene(const QJsonObject &scene, const QString &serverUrl) {
         return StashBackend::formatScene(scene, serverUrl);
     }
+    static QString resolutionLabel(int height) {
+        return StashBackend::resolutionLabel(height);
+    }
 };
 
 class StashBackendTest : public QObject {
@@ -48,6 +51,10 @@ private slots:
     void sceneTitleFallsBackToFilename();
     void sceneTitleFallsBackToId();
     void sceneJoinsTags();
+    void sceneSummarisesManyTags();
+    void sceneIncludesStudioAndResolution();
+    void sceneTitleWinsOverFilename();
+    void resolutionLabelMatchesStashBuckets();
     void sceneResolvesRelativeStreamUrl();
     void sceneKeepsAbsoluteStreamUrl();
     void sceneWithoutStreamHasEmptyUrl();
@@ -353,6 +360,70 @@ void StashBackendTest::sceneJoinsTags() {
 
     const QVariantMap formatted = StashBackendTestPeer::formatScene(scene, "http://host:9999");
     QCOMPARE(formatted["tagsText"].toString(), QStringLiteral("First, Second"));
+}
+
+void StashBackendTest::sceneSummarisesManyTags() {
+    QJsonArray tags;
+    for (const QString &name : {QStringLiteral("A"), QStringLiteral("B"),
+                                QStringLiteral("C"), QStringLiteral("D"),
+                                QStringLiteral("E")}) {
+        QJsonObject tag;
+        tag["name"] = name;
+        tags.append(tag);
+    }
+
+    QJsonObject scene;
+    scene["id"] = "7";
+    scene["tags"] = tags;
+
+    const QVariantMap formatted = StashBackendTestPeer::formatScene(scene, "http://host:9999");
+    QCOMPARE(formatted["tagsText"].toString(), QStringLiteral("A, B, C, +2 MORE"));
+}
+
+void StashBackendTest::sceneIncludesStudioAndResolution() {
+    QJsonObject studio;
+    studio["name"] = "  Brat Princess  ";
+    QJsonObject file;
+    file["basename"] = "x.mkv";
+    file["height"] = 1080;
+    QJsonArray files;
+    files.append(file);
+
+    QJsonObject scene;
+    scene["id"] = "7";
+    scene["studio"] = studio;
+    scene["files"] = files;
+
+    const QVariantMap formatted = StashBackendTestPeer::formatScene(scene, "http://host:9999");
+    QCOMPARE(formatted["studio"].toString(), QStringLiteral("Brat Princess"));
+    QCOMPARE(formatted["resolution"].toString(), QStringLiteral("1080P"));
+}
+
+void StashBackendTest::sceneTitleWinsOverFilename() {
+    QJsonObject file;
+    file["basename"] = "Some.Scene.Name.mp4";
+    QJsonArray files;
+    files.append(file);
+
+    QJsonObject scene;
+    scene["id"] = "7";
+    scene["title"] = "Real Title";
+    scene["files"] = files;
+
+    // The row leads with the Stash title; the filename is only a fallback.
+    QCOMPARE(StashBackendTestPeer::formatScene(scene, "http://host:9999")["title"].toString(),
+             QStringLiteral("Real Title"));
+}
+
+void StashBackendTest::resolutionLabelMatchesStashBuckets() {
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(0), QString());
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(200), QStringLiteral("144P"));
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(480), QStringLiteral("480P"));
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(720), QStringLiteral("720P"));
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(1079), QStringLiteral("720P"));
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(1080), QStringLiteral("1080P"));
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(2160), QStringLiteral("4K"));
+    QCOMPARE(StashBackendTestPeer::resolutionLabel(6144), QStringLiteral("8K+"));
 }
 
 void StashBackendTest::sceneResolvesRelativeStreamUrl() {
