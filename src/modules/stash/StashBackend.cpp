@@ -53,6 +53,22 @@ query FindTags($filter: FindFilterType) {
 }
 )GQL");
 
+// A marker is a named time index inside a scene. The query pulls the scene's
+// stream path too, so a row can hand mpv both the file and the offset.
+const QString kSceneMarkersQuery = QStringLiteral(R"GQL(
+query FindSceneMarkers($filter: FindFilterType) {
+  findSceneMarkers(filter: $filter) {
+    scene_markers {
+      id
+      title
+      seconds
+      primary_tag { name }
+      scene { id title paths { stream } }
+    }
+  }
+}
+)GQL");
+
 const QString kScenesQuery = QStringLiteral(R"GQL(
 query FindScenes($filter: FindFilterType, $sceneFilter: SceneFilterType) {
   findScenes(filter: $filter, scene_filter: $sceneFilter) {
@@ -547,6 +563,87 @@ QString StashBackend::resolutionLabel(int height) {
     return QStringLiteral("8K+");
 }
 
+QString StashBackend::resolveStreamUrl(const QString &streamPath, const QString &serverUrl) {
+    if (streamPath.isEmpty())
+        return {};
+    // Current releases return an absolute URL; older ones a server-relative path.
+    const QUrl parsed(streamPath);
+    return parsed.isRelative() ? QUrl(serverUrl).resolved(parsed).toString()
+                               : parsed.toString();
+}
+
+QString StashBackend::formatTimestamp(double seconds) {
+    const int total = seconds > 0 ? int(seconds) : 0;
+    const int h = total / 3600;
+    const int m = (total % 3600) / 60;
+    const int s = total % 60;
+    if (h > 0) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(h)
+            .arg(m, 2, 10, QLatin1Char('0'))
+            .arg(s, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2").arg(m).arg(s, 2, 10, QLatin1Char('0'));
+}
+
+QVariantMap StashBackend::formatMarker(const QJsonObject &marker, const QString &serverUrl) {
+    const QJsonObject scene = marker["scene"].toObject();
+    const QString tagName = marker["primary_tag"].toObject()["name"].toString().trimmed();
+
+    // Stash's own marker list falls back to the primary tag when a marker has
+    // no title of its own.
+    QString title = marker["title"].toString().trimmed();
+    if (title.isEmpty())
+        title = tagName;
+    if (title.isEmpty())
+        title = QStringLiteral("MARKER %1").arg(marker["id"].toString());
+
+    QString sceneTitle = scene["title"].toString().trimmed();
+    if (sceneTitle.isEmpty())
+        sceneTitle = QStringLiteral("SCENE %1").arg(scene["id"].toString());
+
+    const double seconds = marker["seconds"].toDouble();
+
+    QVariantMap map;
+    map["markerId"] = marker["id"].toString();
+    map["title"] = title;
+    map["tagText"] = tagName;
+    map["sceneTitle"] = sceneTitle;
+    map["seconds"] = seconds;
+    map["timeText"] = formatTimestamp(seconds);
+    map["streamUrl"] = resolveStreamUrl(scene["paths"].toObject()["stream"].toString(), serverUrl);
+    return map;
+}
+
+QVariantList StashBackend::buildMarkerRows(const QJsonArray &rawMarkers, const QString &serverUrl) {
+    QVariantList rows;
+    for (const QJsonValue &v : rawMarkers) {
+        const QVariantMap marker = formatMarker(v.toObject(), serverUrl);
+        // A marker whose scene has no playable file would be a dead row.
+        if (marker.value("streamUrl").toString().isEmpty())
+            continue;
+        rows.append(marker);
+    }
+
+    // Browsing by remote, a flat list is only navigable when it is grouped, so
+    // order by primary tag, then scene (markers of one scene stay together),
+    // then time index.
+    std::sort(rows.begin(), rows.end(), [](const QVariant &a, const QVariant &b) {
+        const QVariantMap ma = a.toMap();
+        const QVariantMap mb = b.toMap();
+        const int byTag = ma.value("tagText").toString().compare(
+            mb.value("tagText").toString(), Qt::CaseInsensitive);
+        if (byTag != 0)
+            return byTag < 0;
+        const int byScene = ma.value("sceneTitle").toString().compare(
+            mb.value("sceneTitle").toString(), Qt::CaseInsensitive);
+        if (byScene != 0)
+            return byScene < 0;
+        return ma.value("seconds").toDouble() < mb.value("seconds").toDouble();
+    });
+    return rows;
+}
+
 QVariantMap StashBackend::formatScene(const QJsonObject &scene, const QString &serverUrl) {
     const QJsonArray files = scene["files"].toArray();
     const QJsonObject file = files.isEmpty() ? QJsonObject() : files.first().toObject();
@@ -578,17 +675,9 @@ QVariantMap StashBackend::formatScene(const QJsonObject &scene, const QString &s
 
     // Stash builds paths.stream from the request's base URL (honouring
     // external_host and proxy prefixes) and appends ?apikey=..., so mpv needs
-    // no extra header. Current releases return an absolute URL; older ones
-    // returned a path-only value, which is resolved against the configured
-    // server here.
-    const QString streamPath = scene["paths"].toObject()["stream"].toString();
-    QString streamUrl;
-    if (!streamPath.isEmpty()) {
-        const QUrl parsed(streamPath);
-        streamUrl = parsed.isRelative()
-                        ? QUrl(serverUrl).resolved(parsed).toString()
-                        : parsed.toString();
-    }
+    // no extra header.
+    const QString streamUrl =
+        resolveStreamUrl(scene["paths"].toObject()["stream"].toString(), serverUrl);
 
     QVariantMap map;
     map["itemId"] = scene["id"].toString();
@@ -637,6 +726,26 @@ void StashBackend::load_tags() {
             });
         }
         emit tagsLoaded(tags);
+    });
+}
+
+void StashBackend::load_markers() {
+    QJsonObject filter;
+    filter["page"] = 1;
+    filter["per_page"] = -1;
+    // The server sorts by one field; the rows are re-ordered by primary tag in
+    // buildMarkerRows(), which is what a viewer actually browses by.
+    filter["sort"] = QStringLiteral("title");
+    filter["direction"] = QStringLiteral("ASC");
+
+    QJsonObject variables;
+    variables["filter"] = filter;
+
+    postGraphql(kSceneMarkersQuery, variables, QStringLiteral("LOAD MARKERS FAILED"),
+                [this](const QJsonObject &data) {
+        emit markersLoaded(
+            buildMarkerRows(data["findSceneMarkers"].toObject()["scene_markers"].toArray(),
+                            m_serverUrl));
     });
 }
 

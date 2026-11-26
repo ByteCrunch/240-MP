@@ -28,6 +28,15 @@ struct StashBackendTestPeer {
     static QString resolutionLabel(int height) {
         return StashBackend::resolutionLabel(height);
     }
+    static QVariantList buildMarkerRows(const QJsonArray &rawMarkers, const QString &serverUrl) {
+        return StashBackend::buildMarkerRows(rawMarkers, serverUrl);
+    }
+    static QVariantMap formatMarker(const QJsonObject &marker, const QString &serverUrl) {
+        return StashBackend::formatMarker(marker, serverUrl);
+    }
+    static QString formatTimestamp(double seconds) {
+        return StashBackend::formatTimestamp(seconds);
+    }
 };
 
 class StashBackendTest : public QObject {
@@ -55,6 +64,11 @@ private slots:
     void sceneIncludesStudioAndResolution();
     void sceneTitleWinsOverFilename();
     void resolutionLabelMatchesStashBuckets();
+    void markerCarriesSceneStreamAndOffset();
+    void markerFallsBackToPrimaryTag();
+    void markerRowsGroupByTagThenSceneThenTime();
+    void markerRowsSkipMarkersWithoutAStream();
+    void markerTimestampFormatting();
     void sceneResolvesRelativeStreamUrl();
     void sceneKeepsAbsoluteStreamUrl();
     void sceneWithoutStreamHasEmptyUrl();
@@ -424,6 +438,116 @@ void StashBackendTest::resolutionLabelMatchesStashBuckets() {
     QCOMPARE(StashBackendTestPeer::resolutionLabel(1080), QStringLiteral("1080P"));
     QCOMPARE(StashBackendTestPeer::resolutionLabel(2160), QStringLiteral("4K"));
     QCOMPARE(StashBackendTestPeer::resolutionLabel(6144), QStringLiteral("8K+"));
+}
+
+void StashBackendTest::markerCarriesSceneStreamAndOffset() {
+    // Shape from a real Stash 0.32 findSceneMarkers response.
+    QJsonObject tag;
+    tag["name"] = "Pegging";
+    QJsonObject scene;
+    scene["id"] = "1195";
+    scene["title"] = "Worship Her Greatness!";
+    QJsonObject paths;
+    paths["stream"] = "https://stash.example/scene/1195/stream?apikey=abc";
+    scene["paths"] = paths;
+
+    QJsonObject marker;
+    marker["id"] = "126";
+    marker["title"] = "Anal Insertion";
+    marker["seconds"] = 913.0;
+    marker["primary_tag"] = tag;
+    marker["scene"] = scene;
+
+    const QVariantMap row = StashBackendTestPeer::formatMarker(marker, "https://stash.example");
+    QCOMPARE(row["title"].toString(), QStringLiteral("Anal Insertion"));
+    QCOMPARE(row["tagText"].toString(), QStringLiteral("Pegging"));
+    QCOMPARE(row["sceneTitle"].toString(), QStringLiteral("Worship Her Greatness!"));
+    QCOMPARE(row["seconds"].toDouble(), 913.0);
+    QCOMPARE(row["timeText"].toString(), QStringLiteral("15:13"));
+    // The scene's own stream is played, not the marker clip.
+    QCOMPARE(row["streamUrl"].toString(),
+             QStringLiteral("https://stash.example/scene/1195/stream?apikey=abc"));
+}
+
+void StashBackendTest::markerFallsBackToPrimaryTag() {
+    QJsonObject tag;
+    tag["name"] = "Facesitting";
+    QJsonObject scene;
+    scene["id"] = "59";
+    QJsonObject paths;
+    paths["stream"] = "/scene/59/stream?apikey=abc";
+    scene["paths"] = paths;
+
+    QJsonObject marker;
+    marker["id"] = "3";
+    marker["title"] = "   ";          // untitled marker
+    marker["seconds"] = 286;
+    marker["primary_tag"] = tag;
+    marker["scene"] = scene;
+
+    const QVariantMap row = StashBackendTestPeer::formatMarker(marker, "http://host:9999");
+    QCOMPARE(row["title"].toString(), QStringLiteral("Facesitting"));
+    // Server-relative stream paths are resolved against serverUrl.
+    QCOMPARE(row["streamUrl"].toString(),
+             QStringLiteral("http://host:9999/scene/59/stream?apikey=abc"));
+}
+
+void StashBackendTest::markerRowsGroupByTagThenSceneThenTime() {
+    auto makeMarker = [](const QString &id, const QString &tag, const QString &sceneTitle,
+                         double seconds) {
+        QJsonObject primaryTag;
+        primaryTag["name"] = tag;
+        QJsonObject scene;
+        scene["id"] = id;
+        scene["title"] = sceneTitle;
+        QJsonObject paths;
+        paths["stream"] = "/scene/" + id + "/stream";
+        scene["paths"] = paths;
+        QJsonObject marker;
+        marker["id"] = id;
+        marker["title"] = "M" + id;
+        marker["seconds"] = seconds;
+        marker["primary_tag"] = primaryTag;
+        marker["scene"] = scene;
+        return marker;
+    };
+
+    QJsonArray raw;
+    raw.append(makeMarker("1", "zeta", "Scene B", 100));
+    raw.append(makeMarker("2", "alpha", "Scene Z", 30));
+    raw.append(makeMarker("3", "alpha", "Scene Z", 10));
+    raw.append(makeMarker("4", "alpha", "Scene A", 500));
+
+    const QVariantList rows = StashBackendTestPeer::buildMarkerRows(raw, "http://host:9999");
+    QCOMPARE(int(rows.size()), 4);
+    const auto row = [&rows](int i) { return rows[i].toMap(); };
+
+    // alpha first (tag), then by scene title, then by time inside a scene.
+    QCOMPARE(row(0).value("tagText").toString(), QStringLiteral("alpha"));
+    QCOMPARE(row(0).value("sceneTitle").toString(), QStringLiteral("Scene A"));
+    QCOMPARE(row(1).value("sceneTitle").toString(), QStringLiteral("Scene Z"));
+    QCOMPARE(row(1).value("seconds").toDouble(), 10.0);
+    QCOMPARE(row(2).value("sceneTitle").toString(), QStringLiteral("Scene Z"));
+    QCOMPARE(row(2).value("seconds").toDouble(), 30.0);
+    QCOMPARE(row(3).value("tagText").toString(), QStringLiteral("zeta"));
+}
+
+void StashBackendTest::markerRowsSkipMarkersWithoutAStream() {
+    QJsonObject broken;
+    broken["id"] = "1";
+    broken["title"] = "No scene";
+
+    QJsonArray raw;
+    raw.append(broken);
+
+    QVERIFY(StashBackendTestPeer::buildMarkerRows(raw, "http://host:9999").isEmpty());
+}
+
+void StashBackendTest::markerTimestampFormatting() {
+    QCOMPARE(StashBackendTestPeer::formatTimestamp(0), QStringLiteral("0:00"));
+    QCOMPARE(StashBackendTestPeer::formatTimestamp(65.9), QStringLiteral("1:05"));
+    QCOMPARE(StashBackendTestPeer::formatTimestamp(913), QStringLiteral("15:13"));
+    QCOMPARE(StashBackendTestPeer::formatTimestamp(3725), QStringLiteral("1:02:05"));
 }
 
 void StashBackendTest::sceneResolvesRelativeStreamUrl() {

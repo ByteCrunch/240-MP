@@ -10,6 +10,8 @@ FocusScope {
     property var navParams: ({})
     property var item: navParams.item || ({})
     property string streamUrl: item.streamUrl || ""
+    // Markers start inside the scene; scenes start at 0.
+    property double startSeconds: item.startSeconds || 0
     property string errorMessage: ""
 
     signal goBack()
@@ -68,7 +70,7 @@ FocusScope {
         id: startTimer
         interval: 50
         repeat: false
-        onTriggered: mpvController.loadAndPlay(playerRoot.streamUrl, 0, 0, -2)
+        onTriggered: mpvController.loadAndPlay(playerRoot.streamUrl, playerRoot.startSeconds, 0, -2)
     }
 
     // mpv can only report "unrecognized file format" when a reverse proxy

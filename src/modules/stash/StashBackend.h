@@ -49,6 +49,9 @@ public:
     // Browse
     Q_INVOKABLE void load_saved_filters();
     Q_INVOKABLE void load_tags();
+    // Scene markers, grouped by primary tag: a marker plays its scene from the
+    // marker's time index.
+    Q_INVOKABLE void load_markers();
     // findFilter / objectFilter are a saved filter's find_filter / object_filter
     // as returned by Stash; pass empty maps for "all scenes".
     Q_INVOKABLE void load_scenes(const QVariantMap &findFilter, const QVariantMap &objectFilter);
@@ -61,6 +64,7 @@ public:
 signals:
     void savedFiltersLoaded(const QVariant &filters);
     void tagsLoaded(const QVariant &tags);
+    void markersLoaded(const QVariant &markers);
     void scenesLoaded(const QVariant &scenes);
     void streamCheckFinished(bool ok, const QString &error);
     void errorOccurred(const QString &message);
@@ -89,6 +93,14 @@ private:
     // SceneFilterType that matches scenes carrying the given tag.
     static QJsonObject sceneFilterForTag(const QString &tagId);
     static QVariantMap formatScene(const QJsonObject &scene, const QString &serverUrl);
+    // Formats, filters and orders scene markers for the MARKERS list: grouped
+    // by primary tag, then scene title, then time index.
+    static QVariantList buildMarkerRows(const QJsonArray &rawMarkers, const QString &serverUrl);
+    static QVariantMap formatMarker(const QJsonObject &marker, const QString &serverUrl);
+    // "4:46" / "1:02:03" — the marker's time index, shown in the row.
+    static QString formatTimestamp(double seconds);
+    // Stash returns stream paths either absolute or server-relative.
+    static QString resolveStreamUrl(const QString &streamPath, const QString &serverUrl);
 
     QString configPath() const;
     void loadConfig();

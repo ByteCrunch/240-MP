@@ -15,7 +15,7 @@ FocusScope {
 
     // Static menu — kept as plain strings to match the YouTube module's
     // simple-menu pattern.
-    property var items: ["Scenes", "Tags"]
+    property var items: ["Scenes", "Tags", "Markers"]
 
     property bool configured: true
     property string configError: ""
@@ -105,6 +105,8 @@ FocusScope {
                 browseRoot.navigateTo("Filters.qml", {}, state)
             else if (selected === "Tags")
                 browseRoot.navigateTo("Tags.qml", {}, state)
+            else if (selected === "Markers")
+                browseRoot.navigateTo("Markers.qml", {}, state)
         }
 
         delegate: Item {
